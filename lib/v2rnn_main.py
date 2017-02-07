@@ -34,7 +34,7 @@ dataset = "mnist"
 
 print "dataset", dataset
 
-do_synthmem = True
+do_synthmem = False
 
 print "do synthmem", do_synthmem
 
@@ -56,7 +56,7 @@ beta1_f = 0.9
 print "learning rate and beta forward_updates", lr_f, beta1_f
 
 lr_s = 0.0001
-beta1_s = 0.7
+beta1_s = 0.1
 
 print "learning rate and beta synthmem_updates", lr_s, beta1_s
 
@@ -131,8 +131,8 @@ def init_params_synthmem():
     
     p = init_tparams(pa)
 
-    #p['Wh'] = theano.shared(0.03 * rng.normal(0,1,size=(1,1024,2048)).astype('float32'))
-    p['Wh2'] = theano.shared(0.03 * rng.normal(0,1,size=(1,1024,1024)).astype('float32'))
+    p['Wh'] = theano.shared(0.03 * rng.normal(0,1,size=(1024,1024)).astype('float32'))
+    #p['Wh2'] = theano.shared(0.03 * rng.normal(0,1,size=(1,1024,1024)).astype('float32'))
 
     p['Wx'] = theano.shared(0.03 * rng.normal(0,1,size=(1,1024,2048)).astype('float32'))
     p['Wx2'] = theano.shared(0.03 * rng.normal(0,1,size=(1,2048,nf)).astype('float32'))
@@ -140,8 +140,8 @@ def init_params_synthmem():
     p['Wy1'] = theano.shared(0.03 * rng.normal(0,1,size=(1,1024,1024)).astype('float32'))
     p['Wy2'] = theano.shared(0.03 * rng.normal(0,1,size=(1,1024,11)).astype('float32'))
 
-    #p['bh'] = theano.shared(0.03 * rng.normal(0,1,size=(1,2048,)).astype('float32'))
-    p['bh2'] = theano.shared(0.03 * rng.normal(0,1,size=(1,1024,)).astype('float32'))
+    p['bh'] = theano.shared(0.03 * rng.normal(0,1,size=(1024,)).astype('float32'))
+    #p['bh2'] = theano.shared(0.03 * rng.normal(0,1,size=(1,1024,)).astype('float32'))
     
     p['bx'] = theano.shared(0.03 * rng.normal(0,1,size=(1,2048,)).astype('float32'))
     p['bx2'] = theano.shared(0.03 * rng.normal(0,1,size=(1,nf,)).astype('float32'))
@@ -185,10 +185,13 @@ def forward(p, h, x_true, y_true, i):
 def synthmem(p, h_next, i): 
 
     i *= 0
+    
+    print "also using tanh in emb synthmem"
+    emb = T.tanh(T.dot(h_next, p['Wh']) + p['bh'])
 
-    hn1 = lngru_layer(p,h_next,{},prefix='sm_gru1',mask=None,one_step=True,init_state=h_next[:,:1024],backwards=False)
+    hn2 = lngru_layer(p,emb,{},prefix='sm_gru1',mask=None,one_step=True,init_state=h_next[:,:1024],backwards=False)
     #hn1 = T.tanh(T.dot(h_next, p['Wh'][i]) + p['bh'][i])
-    hn2 = T.tanh(T.dot(hn1[0], p['Wh2'][i]) + p['bh2'][i])
+    #hn2 = T.tanh(T.dot(hn1[0], p['Wh2'][i]) + p['bh2'][i])
 
     xh1 = T.nnet.relu(ln(T.dot(h_next, p['Wx'][i]) + p['bx'][i]), alpha=0.02)
     x = T.dot(xh1, p['Wx2'][i]) + p['bx2'][i]
@@ -196,7 +199,7 @@ def synthmem(p, h_next, i):
     yh1 = T.nnet.relu(ln(T.dot(h_next, p['Wy1'][i]) + p['by1'][i]), alpha=0.02)
     y = T.nnet.softmax(T.dot(yh1, p['Wy2'][i]))
 
-    return hn2, x, y
+    return hn2[0], x, y
 
 
 params_forward = init_params_forward()
