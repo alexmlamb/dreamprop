@@ -2,6 +2,10 @@
 
 import sys
 sys.path.append("/u/lambalex/DeepLearning/dreamprop/lib")
+import os
+
+os.system('/u/lambalex/.profile')
+os.system('/u/lambalex/.bashrc')
 
 import cPickle as pickle
 import gzip
@@ -12,7 +16,6 @@ import numpy.random as rng
 import lasagne
 import numpy as np
 from random import randint
-import os
 
 from nn_layers import param_init_lnlstm, lnlstm_layer, param_init_lngru, lngru_layer, param_init_fflayer, fflayer
 
@@ -31,26 +34,31 @@ dataset = "mnist"
 
 print "dataset", dataset
 
-do_synthmem = False
+do_synthmem = True
 
 print "do synthmem", do_synthmem
 
-sign_trick = True
+sign_trick = False
 
 print "sign trick", sign_trick
 
-use_class_loss_forward = 1.0
+use_class_loss_forward = 0.0
 
 print "use class loss forward", use_class_loss_forward
 
-only_y_last_step = False
+only_y_last_step = True
 
 print "only give y on last step", only_y_last_step
 
-lr_f = 0.00001
-beta1_f = 0.90
+lr_f = 0.0001
+beta1_f = 0.9
 
 print "learning rate and beta forward_updates", lr_f, beta1_f
+
+lr_s = 0.0001
+beta1_s = 0.7
+
+print "learning rate and beta synthmem_updates", lr_s, beta1_s
 
 if dataset == "mnist":
     mn = gzip.open("/u/lambalex/data/mnist/mnist.pkl.gz")
@@ -117,10 +125,14 @@ def init_params_forward():
 
 def init_params_synthmem():
 
-    p = {}
+    pa = {}
 
-    p['Wh'] = theano.shared(0.03 * rng.normal(0,1,size=(1,1024,2048)).astype('float32'))
-    p['Wh2'] = theano.shared(0.03 * rng.normal(0,1,size=(1,2048,1024)).astype('float32'))
+    param_init_lngru({}, params=pa, prefix='sm_gru1', nin=1024, dim=1024)
+    
+    p = init_tparams(pa)
+
+    #p['Wh'] = theano.shared(0.03 * rng.normal(0,1,size=(1,1024,2048)).astype('float32'))
+    p['Wh2'] = theano.shared(0.03 * rng.normal(0,1,size=(1,1024,1024)).astype('float32'))
 
     p['Wx'] = theano.shared(0.03 * rng.normal(0,1,size=(1,1024,2048)).astype('float32'))
     p['Wx2'] = theano.shared(0.03 * rng.normal(0,1,size=(1,2048,nf)).astype('float32'))
@@ -128,7 +140,7 @@ def init_params_synthmem():
     p['Wy1'] = theano.shared(0.03 * rng.normal(0,1,size=(1,1024,1024)).astype('float32'))
     p['Wy2'] = theano.shared(0.03 * rng.normal(0,1,size=(1,1024,11)).astype('float32'))
 
-    p['bh'] = theano.shared(0.03 * rng.normal(0,1,size=(1,2048,)).astype('float32'))
+    #p['bh'] = theano.shared(0.03 * rng.normal(0,1,size=(1,2048,)).astype('float32'))
     p['bh2'] = theano.shared(0.03 * rng.normal(0,1,size=(1,1024,)).astype('float32'))
     
     p['bx'] = theano.shared(0.03 * rng.normal(0,1,size=(1,2048,)).astype('float32'))
@@ -174,8 +186,9 @@ def synthmem(p, h_next, i):
 
     i *= 0
 
-    hn1 = T.tanh(T.dot(h_next, p['Wh'][i]) + p['bh'][i])
-    hn2 = T.tanh(T.dot(hn1, p['Wh2'][i]) + p['bh2'][i])
+    hn1 = lngru_layer(p,h_next,{},prefix='sm_gru1',mask=None,one_step=True,init_state=h_next[:,:1024],backwards=False)
+    #hn1 = T.tanh(T.dot(h_next, p['Wh'][i]) + p['bh'][i])
+    hn2 = T.tanh(T.dot(hn1[0], p['Wh2'][i]) + p['bh2'][i])
 
     xh1 = T.nnet.relu(ln(T.dot(h_next, p['Wx'][i]) + p['bx'][i]), alpha=0.02)
     x = T.dot(xh1, p['Wx2'][i]) + p['bx2'][i]
@@ -251,7 +264,7 @@ g_last_local = T.grad(class_loss, h_last)
 param_grads = T.grad(class_loss * 1.0, params_forward.values(), known_grads = {h_next_rec*1.0 : g_next_use})
 
 #Should we also update gradients through the synthmem module?
-synthmem_updates = lasagne.updates.adam(param_grads, params_forward.values())
+synthmem_updates = lasagne.updates.adam(param_grads, params_forward.values(),learning_rate=lr_s,beta1=beta1_s)
 
 synthmem_method = theano.function(inputs = [h_next, g_next, step], outputs = [h_last, g_last, hdiff, g_last_local,x_last,y_last], updates = synthmem_updates)
 
@@ -277,7 +290,7 @@ for iteration in xrange(0,100000):
     g_next = np.zeros(shape=(64,m)).astype('float32')
 
 
-    if do_synthmem==True:
+    if do_synthmem==True and iteration > 1000:
         for k in reversed(range(0,num_steps)):
             h_next, g_last,hdiff,g_last_local,x_last_rec,y_last_rec = synthmem_method(h_next,g_next,k)
             g_next = g_last
