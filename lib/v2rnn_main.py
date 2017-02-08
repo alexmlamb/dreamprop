@@ -34,7 +34,7 @@ dataset = "mnist"
 
 print "dataset", dataset
 
-do_synthmem = False
+do_synthmem = True
 
 print "do synthmem", do_synthmem
 
@@ -51,12 +51,12 @@ only_y_last_step = True
 print "only give y on last step", only_y_last_step
 
 lr_f = 0.0001
-beta1_f = 0.9
+beta1_f = 0.90
 
 print "learning rate and beta forward_updates", lr_f, beta1_f
 
 lr_s = 0.0001
-beta1_s = 0.1
+beta1_s = 0.7
 
 print "learning rate and beta synthmem_updates", lr_s, beta1_s
 
@@ -71,7 +71,7 @@ if dataset == "mnist":
     trainy = trainy.astype('int32')
     validy = validy.astype('int32')
 
-    nf = 350
+    nf = 780/2
 
 elif dataset == "cifar":
 
@@ -155,7 +155,7 @@ def join2(a,b):
         return T.concatenate([a,b], axis = 1)
 
 def ln(inp):
-    return (inp - T.mean(inp,axis=1,keepdims=True)) / (0.001 + T.std(inp,axis=1,keepdims=True))
+    return inp#(inp - T.mean(inp,axis=1,keepdims=True))# / (0.001 + T.std(inp,axis=1,keepdims=True))
 
 def forward(p, h, x_true, y_true, i):
 
@@ -186,8 +186,7 @@ def synthmem(p, h_next, i):
 
     i *= 0
     
-    print "also using tanh in emb synthmem"
-    emb = T.tanh(T.dot(h_next, p['Wh']) + p['bh'])
+    emb = T.dot(h_next, p['Wh']) + p['bh']
 
     hn2 = lngru_layer(p,emb,{},prefix='sm_gru1',mask=None,one_step=True,init_state=h_next[:,:1024],backwards=False)
     #hn1 = T.tanh(T.dot(h_next, p['Wh'][i]) + p['bh'][i])
