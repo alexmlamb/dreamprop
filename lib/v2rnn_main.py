@@ -26,7 +26,18 @@ from viz import plot_images
 
 from load_cifar import CifarData
 
+'''
+1,100,1: go back 1 step
+1,100,1,1,1: go back 3 steps
+'''
+def noneabove(rec_loss_lst,k,limit):
+    for j in reversed(range(len(rec_loss_lst))):
 
+        if rec_loss_lst[j] >= limit:
+            return False
+
+        if j < k:
+            return True
 
 dataset = "mnist"
 #dataset = "cifar"
@@ -60,6 +71,8 @@ beta1_s = 0.7
 
 print "learning rate and beta synthmem_updates", lr_s, beta1_s
 
+num_steps = 8
+
 if dataset == "mnist":
     mn = gzip.open("/u/lambalex/data/mnist/mnist.pkl.gz")
 
@@ -71,7 +84,7 @@ if dataset == "mnist":
     trainy = trainy.astype('int32')
     validy = validy.astype('int32')
 
-    nf = 780/2
+    nf = 780/num_steps
 
 elif dataset == "cifar":
 
@@ -102,7 +115,6 @@ print trainy.shape
 print validx.shape
 print validy.shape
 
-num_steps = 2
 
 print "doing deep bp"
 print "using 1 layer forward net"
@@ -260,6 +272,9 @@ else:
     g_next_use = g_next
 
 hdiff = T.eq(T.sgn(h_next), T.sgn(h_next_rec)).mean()
+
+h_rec_error = 0.1 * T.sum(T.sqr(h_next - h_next_rec))
+
 g_last = T.grad(class_loss, h_last, known_grads = {h_next_rec*1.0 : g_next_use})
 g_last_local = T.grad(class_loss, h_last)
 
@@ -268,9 +283,12 @@ param_grads = T.grad(class_loss * 1.0, params_forward.values(), known_grads = {h
 #Should we also update gradients through the synthmem module?
 synthmem_updates = lasagne.updates.adam(param_grads, params_forward.values(),learning_rate=lr_s,beta1=beta1_s)
 
-synthmem_method = theano.function(inputs = [h_next, g_next, step], outputs = [h_last, g_last, hdiff, g_last_local,x_last,y_last], updates = synthmem_updates)
+synthmem_method = theano.function(inputs = [h_next, g_next, step], outputs = [h_last, g_last, hdiff, g_last_local,x_last,y_last,h_rec_error], updates = synthmem_updates)
 
 m = 1024
+
+h_forward_lst = [0]*num_steps
+rec_loss_lst = [0]*num_steps
 
 for iteration in xrange(0,100000):
     r = randint(0,49900)
@@ -279,35 +297,31 @@ for iteration in xrange(0,100000):
     y = trainy[r:r+64]
 
     h_in = np.zeros(shape=(64,m)).astype('float32')
-
-    for j in range(num_steps):
-        x_step = x[:,j*nf:(j+1)*nf]
-        h_next, rec_loss, class_loss,acc,y_est = forward_method(x_step,y,h_in,j)
-        h_in = h_next
-        #print "est", y_est
-        #print "acc", acc
-        #print "true", y
-
-
     g_next = np.zeros(shape=(64,m)).astype('float32')
 
+    h_final = h_forward_lst[-1]
 
-    if do_synthmem==True and iteration > 1000:
-        for k in reversed(range(0,num_steps)):
-            h_next, g_last,hdiff,g_last_local,x_last_rec,y_last_rec = synthmem_method(h_next,g_next,k)
+    for (j,k) in zip(range(num_steps),reversed(range(num_steps))):
+        x_step = x[:,j*nf:(j+1)*nf]
+        h_next, rec_loss, class_loss,acc,y_est = forward_method(x_step,y,h_in,j)
+        h_forward_lst[j] = h_next
+        h_in = h_next
+        rec_loss_lst[j] = rec_loss
+
+        if iteration % 100 == 0:
+            print "rec loss", j, rec_loss
+
+        if do_synthmem and iteration > 1000 and noneabove(rec_loss_lst,k,100.0):
+            if iteration % 100 == 1:
+                print "step", k, rec_loss_lst[k]
+            h_next_synthmem, g_last,hdiff,g_last_local,x_last_rec,y_last_rec,h_rec_error = synthmem_method(h_final,g_next,k)
             g_next = g_last
-
-            if iteration % 500000 == 0:
-                print "step", k
-                if k == num_steps-1:
-                    print "y last rec", y_last_rec[0]
-                #if k == 0:
-                #    print "saving images"
-                #    plot_images(x_last_rec, "plots/" + os.environ["SLURM_JOB_ID"] + "_img.png", str(iteration))
-                #    plot_images(x, "plots/" + os.environ["SLURM_JOB_ID"] + "_real.png", str(iteration))
+            h_final = h_next_synthmem
 
     #using 500
     if iteration % 100 == 0:
+        print "limit of 100.0"
+
         print "========================================"
         print "train acc", acc
         print "train cost", class_loss
