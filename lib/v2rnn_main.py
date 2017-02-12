@@ -26,6 +26,9 @@ from viz import plot_images
 
 from load_cifar import CifarData
 
+def cast(inp):
+    return T.cast(inp, 'float32')
+
 '''
 1,100,1: go back 1 step
 1,100,1,1,1: go back 3 steps
@@ -36,7 +39,7 @@ def noneabove(rec_loss_lst,k,limit):
         if rec_loss_lst[j] >= limit:
             return False
 
-        if j < k:
+        if j <= k:
             return True
 
 dataset = "mnist"
@@ -53,25 +56,35 @@ sign_trick = False
 
 print "sign trick", sign_trick
 
-use_class_loss_forward = 0.0
+use_class_loss_forward = 1.0
 
 print "use class loss forward", use_class_loss_forward
 
-only_y_last_step = True
+only_y_last_step = False
 
 print "only give y on last step", only_y_last_step
 
 lr_f = 0.0001
-beta1_f = 0.90
+beta1_f = 0.9
 
 print "learning rate and beta forward_updates", lr_f, beta1_f
 
 lr_s = 0.0001
-beta1_s = 0.7
+beta1_s = 0.9
 
 print "learning rate and beta synthmem_updates", lr_s, beta1_s
 
-num_steps = 8
+num_steps = 1
+
+limit = 200.0
+
+print "BP rec limit", limit
+
+m = 512
+
+print "Number of units", m
+
+h_rec_weight = 0.1
 
 if dataset == "mnist":
     mn = gzip.open("/u/lambalex/data/mnist/mnist.pkl.gz")
@@ -124,14 +137,14 @@ def init_params_forward():
 
     p = {}
 
-    param_init_lngru({}, params=p, prefix='gru1', nin=1024, dim=1024)
+    param_init_lngru({}, params=p, prefix='gru1', nin=m, dim=m)
 
     tparams = init_tparams(p)
 
-    tparams['W1'] = theano.shared(0.03 * rng.normal(0,1,size=(1,1024,1024)).astype('float32'))
-    tparams['W2'] = theano.shared(0.03 * rng.normal(0,1,size=(1,1024,1024)).astype('float32'))
-    tparams['Wy'] = theano.shared(0.03 * rng.normal(0,1,size=(1,1024,11)).astype('float32'))
-    tparams['W0'] = theano.shared(0.03 * rng.normal(0,1,size=(1024+nf,1024)).astype('float32'))
+    tparams['W1'] = theano.shared(0.03 * rng.normal(0,1,size=(1,m,m)).astype('float32'))
+    tparams['W2'] = theano.shared(0.03 * rng.normal(0,1,size=(1,m,m)).astype('float32'))
+    tparams['Wy'] = theano.shared(0.03 * rng.normal(0,1,size=(1,m,11)).astype('float32'))
+    tparams['W0'] = theano.shared(0.03 * rng.normal(0,1,size=(m+nf,m)).astype('float32'))
 
     return tparams
 
@@ -139,26 +152,26 @@ def init_params_synthmem():
 
     pa = {}
 
-    param_init_lngru({}, params=pa, prefix='sm_gru1', nin=1024, dim=1024)
+    param_init_lngru({}, params=pa, prefix='sm_gru1', nin=m, dim=m)
     
     p = init_tparams(pa)
 
-    p['Wh'] = theano.shared(0.03 * rng.normal(0,1,size=(1024,1024)).astype('float32'))
+    p['Wh'] = theano.shared(0.03 * rng.normal(0,1,size=(m,m)).astype('float32'))
     #p['Wh2'] = theano.shared(0.03 * rng.normal(0,1,size=(1,1024,1024)).astype('float32'))
 
-    p['Wx'] = theano.shared(0.03 * rng.normal(0,1,size=(1,1024,2048)).astype('float32'))
-    p['Wx2'] = theano.shared(0.03 * rng.normal(0,1,size=(1,2048,nf)).astype('float32'))
+    p['Wx'] = theano.shared(0.03 * rng.normal(0,1,size=(1,m,m)).astype('float32'))
+    p['Wx2'] = theano.shared(0.03 * rng.normal(0,1,size=(1,m,nf)).astype('float32'))
 
-    p['Wy1'] = theano.shared(0.03 * rng.normal(0,1,size=(1,1024,1024)).astype('float32'))
-    p['Wy2'] = theano.shared(0.03 * rng.normal(0,1,size=(1,1024,11)).astype('float32'))
+    p['Wy1'] = theano.shared(0.03 * rng.normal(0,1,size=(1,m,m)).astype('float32'))
+    p['Wy2'] = theano.shared(0.03 * rng.normal(0,1,size=(1,m,11)).astype('float32'))
 
-    p['bh'] = theano.shared(0.03 * rng.normal(0,1,size=(1024,)).astype('float32'))
+    p['bh'] = theano.shared(0.03 * rng.normal(0,1,size=(m,)).astype('float32'))
     #p['bh2'] = theano.shared(0.03 * rng.normal(0,1,size=(1,1024,)).astype('float32'))
     
-    p['bx'] = theano.shared(0.03 * rng.normal(0,1,size=(1,2048,)).astype('float32'))
+    p['bx'] = theano.shared(0.03 * rng.normal(0,1,size=(1,m,)).astype('float32'))
     p['bx2'] = theano.shared(0.03 * rng.normal(0,1,size=(1,nf,)).astype('float32'))
 
-    p['by1'] = theano.shared(0.03 * rng.normal(0,1,size=(1,1024,)).astype('float32'))
+    p['by1'] = theano.shared(0.03 * rng.normal(0,1,size=(1,m,)).astype('float32'))
 
     return p
 
@@ -166,8 +179,9 @@ def init_params_synthmem():
 def join2(a,b):
         return T.concatenate([a,b], axis = 1)
 
+print "USING FULL LN"
 def ln(inp):
-    return inp#(inp - T.mean(inp,axis=1,keepdims=True))# / (0.001 + T.std(inp,axis=1,keepdims=True))
+    return (inp - T.mean(inp,axis=1,keepdims=True)) / (0.001 + T.std(inp,axis=1,keepdims=True))
 
 def forward(p, h, x_true, y_true, i):
 
@@ -177,7 +191,7 @@ def forward(p, h, x_true, y_true, i):
 
     emb = T.dot(inp, p['W0'])
 
-    h0 = lngru_layer(p,emb,{},prefix='gru1',mask=None,one_step=True,init_state=h[:,:1024],backwards=False)
+    h0 = lngru_layer(p,emb,{},prefix='gru1',mask=None,one_step=True,init_state=h[:,:m],backwards=False)
 
     h1 = T.nnet.relu(ln(T.dot(h0[0], p['W1'][i])),alpha=0.02)
     h2 = T.nnet.relu(ln(T.dot(h1, p['W2'][i])),alpha=0.02)
@@ -200,7 +214,7 @@ def synthmem(p, h_next, i):
     
     emb = T.dot(h_next, p['Wh']) + p['bh']
 
-    hn2 = lngru_layer(p,emb,{},prefix='sm_gru1',mask=None,one_step=True,init_state=h_next[:,:1024],backwards=False)
+    hn2 = lngru_layer(p,emb,{},prefix='sm_gru1',mask=None,one_step=True,init_state=h_next[:,:m],backwards=False)
     #hn1 = T.tanh(T.dot(h_next, p['Wh'][i]) + p['bh'][i])
     #hn2 = T.tanh(T.dot(hn1[0], p['Wh2'][i]) + p['bh2'][i])
 
@@ -271,21 +285,34 @@ if sign_trick:
 else:
     g_next_use = g_next
 
-hdiff = T.eq(T.sgn(h_next), T.sgn(h_next_rec)).mean()
+hdiff = cast(T.eq(T.sgn(h_next), T.sgn(h_next_rec))).mean()
 
-h_rec_error = 0.1 * T.sum(T.sqr(h_next - h_next_rec))
+print "h rec weight", h_rec_weight
 
-g_last = T.grad(class_loss, h_last, known_grads = {h_next_rec*1.0 : g_next_use})
-g_last_local = T.grad(class_loss, h_last)
+h_rec_error = np.asarray(h_rec_weight).astype('float32') * T.sum(T.sqr(h_next - h_next_rec)) + 0.0 * T.sum(cast(x_last)) + 0.0 * T.sum(cast(y_last))
 
-param_grads = T.grad(class_loss * 1.0, params_forward.values(), known_grads = {h_next_rec*1.0 : g_next_use})
+#h_rec_error = theano.shared(np.asarray(0.0).astype('float32'))
+
+g_last = T.grad(class_loss + h_rec_error, h_last, known_grads = {h_next_rec*1.0 : g_next_use})
+g_last_local = T.grad(class_loss + h_rec_error, h_last)
+
+param_grads = T.grad(class_loss * 1.0 + h_rec_error, params_forward.values() + params_synthmem.values(), known_grads = {h_next_rec*1.0 : g_next_use})
+
+print "AM UPDATING SYNTHMEM PARAMS IN SYNTHMEM UPDATES"
 
 #Should we also update gradients through the synthmem module?
-synthmem_updates = lasagne.updates.adam(param_grads, params_forward.values(),learning_rate=lr_s,beta1=beta1_s)
+synthmem_updates = lasagne.updates.adam(param_grads, params_forward.values() + params_synthmem.values(),learning_rate=lr_s,beta1=beta1_s)
 
 synthmem_method = theano.function(inputs = [h_next, g_next, step], outputs = [h_last, g_last, hdiff, g_last_local,x_last,y_last,h_rec_error], updates = synthmem_updates)
 
-m = 1024
+##########################################################################
+#BPTT forward method
+##########################################################################
+
+Xts = T.tensor3()
+Yts = T.imatrix()
+
+train_bptt = bptt_func()
 
 h_forward_lst = [0]*num_steps
 rec_loss_lst = [0]*num_steps
@@ -311,7 +338,7 @@ for iteration in xrange(0,100000):
         if iteration % 100 == 0:
             print "rec loss", j, rec_loss
 
-        if do_synthmem and iteration > 1000 and noneabove(rec_loss_lst,k,100.0):
+        if do_synthmem and iteration > 1000 and noneabove(rec_loss_lst,k,limit):
             if iteration % 100 == 1:
                 print "step", k, rec_loss_lst[k]
             h_next_synthmem, g_last,hdiff,g_last_local,x_last_rec,y_last_rec,h_rec_error = synthmem_method(h_final,g_next,k)
@@ -320,7 +347,7 @@ for iteration in xrange(0,100000):
 
     #using 500
     if iteration % 100 == 0:
-        print "limit of 100.0"
+        
 
         print "========================================"
         print "train acc", acc
