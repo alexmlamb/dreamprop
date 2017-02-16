@@ -21,6 +21,15 @@ def accuracy(p,y):
 def expand(y,n):
     return T.extra_ops.to_one_hot(y, n)
 
+def clip_updates(updates, params):
+    new_updates = []
+    for (p,u) in updates.items():
+        if p in params:
+            print "UPDATING P IN PARAMS"
+            u = T.clip(u, -0.01, 0.01)
+        new_updates.append((p,u))
+    return new_updates
+
 if __name__ == "__main__":
 
     p = T.matrix()

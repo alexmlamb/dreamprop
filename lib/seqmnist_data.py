@@ -31,14 +31,22 @@ print test.shape
 
 import random
 
-def get_batch(segment,mb=64):
+rng.seed(42)
+perm = rng.permutation(0,783)
+
+def get_batch(segment,mb=64, permute=False):
 
     if segment == "train":
         r = random.randint(0,49400)
-        return train[r:r+mb,:-1].astype('int32'), train[r:r+mb,1:].astype('int32')
+        dataobj = train[r:r+mb,:-1].astype('int32'), train[r:r+mb,1:].astype('int32')
     elif segment == "test":
         r = random.randint(0,9400)
-        return test[r:r+mb,:-1].astype('int32'), test[r:r+mb,1:].astype('int32')
+        dataobj = test[r:r+mb,:-1].astype('int32'), test[r:r+mb,1:].astype('int32')
+
+    if permute:
+        dataobj = dataobj.T[perm].T
+
+    return dataobj
 
 if __name__ == "__main__":
 

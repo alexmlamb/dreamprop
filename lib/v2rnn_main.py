@@ -9,7 +9,7 @@ os.system('/u/lambalex/.bashrc')
 
 import cPickle as pickle
 import gzip
-from loss import accuracy, crossent, expand
+from loss import accuracy, crossent, expand, clip_updates
 import theano
 import theano.tensor as T
 import numpy.random as rng
@@ -18,6 +18,8 @@ import numpy as np
 from random import randint
 
 from nn_layers import param_init_lnlstm, lnlstm_layer, param_init_lngru, lngru_layer, param_init_fflayer, fflayer
+
+from gan_objective import init_params_disc, disc
 
 from utils import init_tparams
 
@@ -96,13 +98,13 @@ beta1_s = 0.9
 
 print "learning rate and beta synthmem_updates", lr_s, beta1_s
 
-num_steps = 4
+num_steps = 783
 
 limit = 200.0
 
 print "BP rec limit", limit
 
-m = 512
+m = 1024
 
 print "Number of units", m
 
@@ -176,32 +178,34 @@ def init_params_forward():
 
 def init_params_synthmem():
 
+    smu = 1024
+
     pa = {}
 
-    #param_init_lngru({}, params=pa, prefix='sm_gru1', nin=m, dim=m)
-    
-    p = init_tparams(pa)
+    param_init_lngru({}, params=pa, prefix='sm_gru1', nin=smu, dim=m)
 
-    smu = 1024
+    p = init_tparams(pa)
 
     print "number of synthmem units", smu
 
     p['Wh'] = theano.shared(0.03 * rng.normal(0,1,size=(m,smu)).astype('float32'))
-    p['Wh2'] = theano.shared(0.03 * rng.normal(0,1,size=(smu,m)).astype('float32'))
+    #p['Wh1'] = theano.shared(0.03 * rng.normal(0,1,size=(smu,smu)).astype('float32'))
+    #p['Wh2'] = theano.shared(0.03 * rng.normal(0,1,size=(smu,m)).astype('float32'))
 
-    p['Wx'] = theano.shared(0.03 * rng.normal(0,1,size=(m,m)).astype('float32'))
+    #p['Wx'] = theano.shared(0.03 * rng.normal(0,1,size=(m,m)).astype('float32'))
     p['Wx2'] = theano.shared(0.03 * rng.normal(0,1,size=(m,nf)).astype('float32'))
 
-    p['Wy1'] = theano.shared(0.03 * rng.normal(0,1,size=(m,m)).astype('float32'))
+    #p['Wy1'] = theano.shared(0.03 * rng.normal(0,1,size=(m,m)).astype('float32'))
     p['Wy2'] = theano.shared(0.03 * rng.normal(0,1,size=(m,11)).astype('float32'))
 
-    p['bh'] = theano.shared(0.03 * rng.normal(0,1,size=(smu,)).astype('float32'))
-    p['bh2'] = theano.shared(0.03 * rng.normal(0,1,size=(m,)).astype('float32'))
+    p['bh'] = theano.shared(0.0 * rng.normal(0,1,size=(smu,)).astype('float32'))
+    #p['bh1'] = theano.shared(0.0 * rng.normal(0,1,size=(smu,)).astype('float32'))
+    #p['bh2'] = theano.shared(0.0 * rng.normal(0,1,size=(m,)).astype('float32'))
     
-    p['bx'] = theano.shared(0.03 * rng.normal(0,1,size=(m,)).astype('float32'))
-    p['bx2'] = theano.shared(0.03 * rng.normal(0,1,size=(nf,)).astype('float32'))
+    #p['bx'] = theano.shared(0.0 * rng.normal(0,1,size=(m,)).astype('float32'))
+    p['bx2'] = theano.shared(0.0 * rng.normal(0,1,size=(nf,)).astype('float32'))
 
-    p['by1'] = theano.shared(0.03 * rng.normal(0,1,size=(m,)).astype('float32'))
+    #p['by1'] = theano.shared(0.0 * rng.normal(0,1,size=(m,)).astype('float32'))
 
     return p
 
@@ -209,12 +213,10 @@ def init_params_synthmem():
 def join2(a,b):
         return T.concatenate([a,b], axis = 1)
 
-print "NOT USING FULL LN 1.001"
+print "NOT USING LN"
 def ln(inp):
     return inp# - T.mean(inp,axis=1,keepdims=True)) / (1.001 + T.std(inp,axis=1,keepdims=True))
 
-def ln2(inp):
-    return (inp - T.mean(inp,axis=1,keepdims=True)) / (1.001 + T.std(inp,axis=1,keepdims=True))
 
 def forward(p, h, x_true, y_true, i):
 
@@ -229,7 +231,6 @@ def forward(p, h, x_true, y_true, i):
     #h1 = T.nnet.relu(ln(T.dot(h0[0], p['W1'][i])),alpha=0.02)
     #h2 = T.nnet.relu(ln(T.dot(h1, p['W2'][i])),alpha=0.02)
     #h2 = h1
-
 
     h2 = h0[0]
 
@@ -247,20 +248,24 @@ def synthmem(p, h_next, i):
 
     i *= 0
 
-    h_next = dropout(h_next,0.1)
+    dr = 0.1
+    h_next = dropout(h_next,dr)
 
-    print "USING DROPOUT IN SYNTHMEM"
+    print "USING DROPOUT IN SYNTHMEM", dr
+    #print "THREE LAYER SYNTHMEM"
 
-    emb = T.nnet.relu(T.dot(h_next, p['Wh']) + p['bh'], alpha=0.02)
-    h2 = T.dot(emb, p['Wh2']) + p['bh2']
+    emb = T.tanh(T.dot(h_next, p['Wh']) + p['bh'])
+    #h1 = T.nnet.relu(T.dot(emb, p['Wh1']) + p['bh1'], alpha=0.02)
+    #h2 = T.dot(h1, p['Wh2']) + p['bh2']
 
-    #hn2 = lngru_layer(p,emb,{},prefix='sm_gru1',mask=None,one_step=True,init_state=h_next[:,:m],backwards=False)
 
-    xh1 = T.nnet.relu(ln(T.dot(h_next, p['Wx']) + p['bx']), alpha=0.02)
-    x = T.dot(xh1, p['Wx2']) + p['bx2']
+    #print "JUST USING 1 TANH LAYER SYNTHMEM"
+
+    h2 = lngru_layer(p,emb,{},prefix='sm_gru1',mask=None,one_step=True,init_state=h_next[:,:m],backwards=False)[0]
+
+    x = T.dot(h2, p['Wx2']) + p['bx2']
     
-    yh1 = T.nnet.relu(ln(T.dot(h_next, p['Wy1']) + p['by1']), alpha=0.02)
-    y = T.nnet.softmax(T.dot(yh1, p['Wy2']))
+    y = T.nnet.softmax(T.dot(h2, p['Wy2']))
 
     return h2, x, y
 
@@ -347,7 +352,9 @@ synthmem_method = theano.function(inputs = [h_next, g_next, step], outputs = [h_
 ##########################################################################
 
 Xts = T.tensor3()
-y = T.ivector()
+y = T.imatrix()
+grad_sm_flag = T.iscalar()
+params_disc = init_params_disc()
 
 h_initial = theano.shared(np.zeros((64,m)).astype('float32'))
 h_last = h_initial
@@ -357,29 +364,60 @@ bptt_beta1 = 0.9
 
 print "bptt params", bptt_lr, bptt_beta1
 
-hrw = 0.001
+hrw = 0.01
 
 print "hrw", hrw
 
 total_loss = 0.0
+total_rec_loss = 0.0
+disc_loss = 0.0
 
 def dist(a,b):
     return T.sum(T.sqr(a-b))
 
 for step in range(0, num_steps):
-    h_next_rec, y_est, class_loss,acc,probs = forward(params_forward, h_last, Xts[step], y,step)
-    h_rec,x_rec,y_rec = synthmem(params_synthmem, h_next_rec, step)
+    h_next_rec, y_est, class_loss,acc,probs = forward(params_forward, h_last, Xts[step], y[step],step)
 
-    print "ONLY RECONSTRUCTING H/X with gradient blocking"
-    h_rec_loss = hrw * (1.0 * dist(consider_constant(h_last), h_rec) + 1.0 * dist(Xts[step], x_rec) + 0.0 * dist(expand(y,11), y_rec))
+    h_next_rec_use = T.switch(grad_sm_flag, h_next_rec, consider_constant(h_next_rec))
+
+    h_rec,x_rec,y_rec = synthmem(params_synthmem, h_next_rec_use, step)
+
+    num_keep = 64
+    print "ONLY RECONSTRUCTING H with gradient blocking", num_keep
+    h_rec_loss = 1.0 * dist(consider_constant(h_last)[:,:num_keep], h_rec[:,:num_keep]) + 0.0 * dist(Xts[step], x_rec) + 0.0 * dist(expand(y[step],11), y_rec)
+
+    #h_rec_loss = 1.0 * dist(disc(params_disc, consider_constant(h_last))[0], disc(params_disc, h_rec)[0]) + 0.0 * dist(Xts[step], x_rec) + 0.0 * dist(expand(y[step],11), y_rec)
+
+    #disc_loss += disc(params_disc, h_last)[1].mean() - disc(params_disc, h_rec)[1].mean()
 
     h_last = h_next_rec
     last_acc = acc
-    total_loss += class_loss + h_rec_loss
+    total_loss += class_loss + hrw * h_rec_loss
+    total_rec_loss += h_rec_loss
 
-bptt_updates = lasagne.updates.rmsprop(total_loss, params_forward.values() + params_synthmem.values(), learning_rate=bptt_lr)
+#disc_updates = clip_updates(lasagne.updates.adam(disc_loss, params_disc.values(), learning_rate = 0.001, beta1 = 0.5), params_disc.values())
 
-bptt_train = theano.function([Xts, y], outputs = [last_acc,total_loss], updates=bptt_updates)
+print "USING ADAM"
+bptt_updates = lasagne.updates.adam(total_loss, params_forward.values() + params_synthmem.values(), learning_rate=bptt_lr)
+
+print len(bptt_updates)
+
+#bptt_updates.update(disc_updates)
+
+#print "should be bigger", len(bptt_updates)
+
+for v in bptt_updates.items():
+    print v
+
+#raise Exception("DONE")
+
+#bptt_updates_clipped = clip_updates(bptt_updates, params_forward.values())
+
+#print "turned on clipping"
+
+t0 = time.time()
+bptt_train = theano.function([Xts, y, grad_sm_flag], outputs = [last_acc,total_loss,total_rec_loss], updates=bptt_updates)
+print time.time() - t0, "time to compile"
 
 ########################################################################
 #Main loop section
@@ -388,11 +426,21 @@ bptt_train = theano.function([Xts, y], outputs = [last_acc,total_loss], updates=
 h_forward_lst = [0]*num_steps
 rec_loss_lst = [0]*num_steps
 
+rng.seed(42)
+perm = rng.permutation(784)
+permute = True
+print "permute", permute
+
+if permute:
+    trainx = trainx.T[perm].T
+    validx = validx.T[perm].T
+
 for iteration in xrange(0,200000):
     r = randint(0,49900)
 
     x = trainx[r:r+64]
     y = trainy[r:r+64]
+
 
     h_in = np.zeros(shape=(64,m)).astype('float32')
     g_next = np.zeros(shape=(64,m)).astype('float32')
@@ -419,8 +467,6 @@ for iteration in xrange(0,200000):
             g_next = g_last
             h_final = h_next_synthmem
 
-
-
     #########
     #BPTT Method
     #########
@@ -428,19 +474,41 @@ for iteration in xrange(0,200000):
     if do_bptt:
 
         xsteplst = []
+        ysteplst = []
 
         for j in range(0,num_steps):
             xsteplst.append(x[:,j*nf:(j+1)*nf])
+            if j == num_steps-1:
+                ysteplst.append(y)
+            else:
+                ysteplst.append(y*0+10)
 
         xts = np.asarray(xsteplst)
+        yts = np.asarray(ysteplst)
 
+        wn = 0.0
+        for p in params_synthmem.values():
+            wn += (p.get_value()**2).sum()
 
-        last_acc, total_loss = bptt_train(xts,y)
+        wnf = 0.0
+        for p in params_forward.values():
+            wnf += (p.get_value()**2).sum()
+
+        if iteration > 0:
+            grad_sm_flag = 1
+        else:
+            grad_sm_flag = 0
+
+        last_acc, total_loss, total_rec_loss = bptt_train(xts,yts, grad_sm_flag)
+
 
 
     #using 500
     if iteration % 100 == 0:
-        
+
+        print "WEIGHT NORM", wn
+        print "WEIGHT NORM FORWARD", wnf
+        print "rec loss", total_rec_loss
         print "Total Loss Train bptt", total_loss
         print "Acc Train bptt", last_acc
         print "========================================"
@@ -453,8 +521,10 @@ for iteration in xrange(0,200000):
         vc = []
         for ind in range(0,10000,1000):
             h_in = np.zeros(shape=(1000,m)).astype('float32')
+            
             for j in range(num_steps):
-                h_next,rec_loss,class_loss,acc,probs = forward_method_noupdate(validx[ind:ind+1000,j*nf:(j+1)*nf], validy[ind:ind+1000], h_in, j)
+                vx = validx[ind:ind+1000,j*nf:(j+1)*nf]
+                h_next,rec_loss,class_loss,acc,probs = forward_method_noupdate(vx, validy[ind:ind+1000], h_in, j)
                 h_in = h_next
 
             va.append(acc)
@@ -466,15 +536,5 @@ for iteration in xrange(0,200000):
         print "Valid cost", sum(vc)/len(vc)
 
 
-    if iteration % 500 == 0:
-        print "testing on noisy input"
-        h_in = np.zeros(shape=(1000,m)).astype('float32')
-        x_val = rng.normal(size=(1000,nf)).astype('float32')
-        for j in range(num_steps):
-            h_next,rec_loss,class_loss,acc,probs = forward_method_noupdate(x_val, validy[ind:ind+1000], h_in, j)
-            h_in = h_next
-
-        print "acc noisy", acc
-        print "probs", probs[0]
 
 
