@@ -18,6 +18,7 @@ import numpy.random as rng
 rng.seed(42)
 import lasagne
 import numpy as np
+import random
 from random import randint
 random.seed(42)
 
