@@ -4,6 +4,8 @@ import sys
 sys.path.append("/u/lambalex/DeepLearning/dreamprop/lib")
 import os
 
+import time
+
 os.system('/u/lambalex/.profile')
 os.system('/u/lambalex/.bashrc')
 
@@ -98,13 +100,13 @@ beta1_s = 0.9
 
 print "learning rate and beta synthmem_updates", lr_s, beta1_s
 
-num_steps = 783
+num_steps = 32
 
 limit = 200.0
 
 print "BP rec limit", limit
 
-m = 1024
+m = 512
 
 print "Number of units", m
 
@@ -121,7 +123,9 @@ if dataset == "mnist":
     trainy = trainy.astype('int32')
     validy = validy.astype('int32')
 
-    nf = 780/num_steps
+    nf = 783/num_steps
+
+    print "Number of pixels per step", nf
 
 elif dataset == "cifar":
 
@@ -173,6 +177,7 @@ def init_params_forward():
     tparams['by'] = theano.shared(0.03 * rng.normal(0,1,size=(11,)).astype('float32'))
     tparams['b0'] = theano.shared(0.03 * rng.normal(0,1,size=(m,)).astype('float32'))
 
+    tparams['Wyout'] = theano.shared(0.03 * rng.normal(0,1,size=(m,11)).astype('float32'))
 
     return tparams
 
@@ -351,73 +356,64 @@ synthmem_method = theano.function(inputs = [h_next, g_next, step], outputs = [h_
 #BPTT forward method
 ##########################################################################
 
-Xts = T.tensor3()
-y = T.imatrix()
-grad_sm_flag = T.iscalar()
-params_disc = init_params_disc()
-
-h_initial = theano.shared(np.zeros((64,m)).astype('float32'))
-h_last = h_initial
+def dist(a,b):
+    return T.sum(T.sqr(a-b))
 
 bptt_lr = 0.001
 bptt_beta1 = 0.9
 
 print "bptt params", bptt_lr, bptt_beta1
 
-hrw = 0.01
+hrw = 0.0
 
 print "hrw", hrw
+
+num_keep = 512
+
+print "num keep", num_keep
 
 total_loss = 0.0
 total_rec_loss = 0.0
 disc_loss = 0.0
 
-def dist(a,b):
-    return T.sum(T.sqr(a-b))
+Xts = T.tensor3()
+y = T.ivector()
 
-for step in range(0, num_steps):
-    h_next_rec, y_est, class_loss,acc,probs = forward(params_forward, h_last, Xts[step], y[step],step)
+h_initial = np.zeros((64,m)).astype('float32')
+loss_initial = np.array(0.0).astype('float32')
+acc_initial = np.array(0.0).astype('float32')
 
-    h_next_rec_use = T.switch(grad_sm_flag, h_next_rec, consider_constant(h_next_rec))
+def one_step(xval,h_last,loss_,acc_):
 
-    h_rec,x_rec,y_rec = synthmem(params_synthmem, h_next_rec_use, step)
+    h_next, y_est, class_loss,acc,probs = forward(params_forward, h_last, xval, y, step)
 
-    num_keep = 64
-    print "ONLY RECONSTRUCTING H with gradient blocking", num_keep
-    h_rec_loss = 1.0 * dist(consider_constant(h_last)[:,:num_keep], h_rec[:,:num_keep]) + 0.0 * dist(Xts[step], x_rec) + 0.0 * dist(expand(y[step],11), y_rec)
+    #h_rec,x_rec,y_rec = synthmem(params_synthmem, h_next, step)
 
-    #h_rec_loss = 1.0 * dist(disc(params_disc, consider_constant(h_last))[0], disc(params_disc, h_rec)[0]) + 0.0 * dist(Xts[step], x_rec) + 0.0 * dist(expand(y[step],11), y_rec)
+    #h_rec_loss = 1.0 * dist(consider_constant(h_last)[:,:num_keep], h_rec[:,:num_keep]) + 0.0 * dist(Xts[step], x_rec) + 0.0 * dist(expand(y[step],11), y_rec)
+    loss = class_loss
 
-    #disc_loss += disc(params_disc, h_last)[1].mean() - disc(params_disc, h_rec)[1].mean()
+    print "h next ndim", h_next.ndim
 
-    h_last = h_next_rec
-    last_acc = acc
-    total_loss += class_loss + hrw * h_rec_loss
-    total_rec_loss += h_rec_loss
+    return h_next, loss.mean(), acc.mean()
 
-#disc_updates = clip_updates(lasagne.updates.adam(disc_loss, params_disc.values(), learning_rate = 0.001, beta1 = 0.5), params_disc.values())
+[h_seq, loss_seq, acc_seq], _ = theano.scan(fn=one_step, sequences=[Xts], outputs_info=[h_initial, loss_initial, acc_initial])
 
-print "USING ADAM"
-bptt_updates = lasagne.updates.adam(total_loss, params_forward.values() + params_synthmem.values(), learning_rate=bptt_lr)
+#total_loss = loss_seq[-1]
 
-print len(bptt_updates)
+rec_loss = total_loss * 0.0
 
-#bptt_updates.update(disc_updates)
+#acc = acc_seq[-1]
 
-#print "should be bigger", len(bptt_updates)
+y_out = T.nnet.softmax(T.dot(params_forward["Wyout"], h_seq[-1]))
 
-for v in bptt_updates.items():
-    print v
+total_loss = loss_seq[-1] + crossent(y_out, y)
 
-#raise Exception("DONE")
+acc = accuracy(y_out, y)
 
-#bptt_updates_clipped = clip_updates(bptt_updates, params_forward.values())
+bptt_updates = lasagne.updates.adam(total_loss, params_forward.values(), learning_rate=bptt_lr)
 
-#print "turned on clipping"
-
-t0 = time.time()
-bptt_train = theano.function([Xts, y, grad_sm_flag], outputs = [last_acc,total_loss,total_rec_loss], updates=bptt_updates)
-print time.time() - t0, "time to compile"
+bptt_train = theano.function([Xts, y], outputs = [acc, total_loss, rec_loss], updates=bptt_updates)
+#bptt_valid = theano.function([Xts, y], outputs = [acc, total_loss, rec_loss])
 
 ########################################################################
 #Main loop section
@@ -473,45 +469,33 @@ for iteration in xrange(0,200000):
 
     if do_bptt:
 
+        t0 = time.time()
         xsteplst = []
         ysteplst = []
 
         for j in range(0,num_steps):
             xsteplst.append(x[:,j*nf:(j+1)*nf])
-            if j == num_steps-1:
-                ysteplst.append(y)
-            else:
-                ysteplst.append(y*0+10)
+            #if j == num_steps-1:
+            #    ysteplst.append(y)
+            #else:
+            #    ysteplst.append(y*0+10)
 
         xts = np.asarray(xsteplst)
-        yts = np.asarray(ysteplst)
+        #yts = np.asarray(ysteplst)
 
-        wn = 0.0
-        for p in params_synthmem.values():
-            wn += (p.get_value()**2).sum()
-
-        wnf = 0.0
-        for p in params_forward.values():
-            wnf += (p.get_value()**2).sum()
-
-        if iteration > 0:
-            grad_sm_flag = 1
-        else:
-            grad_sm_flag = 0
-
-        last_acc, total_loss, total_rec_loss = bptt_train(xts,yts, grad_sm_flag)
-
-
+        last_acc, total_loss, total_rec_loss = bptt_train(xts,y)
+        t1 = time.time()
 
     #using 500
-    if iteration % 100 == 0:
+    if iteration % 10 == 0:
 
-        print "WEIGHT NORM", wn
-        print "WEIGHT NORM FORWARD", wnf
+        print "time for bptt update", t1-t0
         print "rec loss", total_rec_loss
         print "Total Loss Train bptt", total_loss
         print "Acc Train bptt", last_acc
         print "========================================"
+
+    if False and iteration % 1000 == 0:
 
         if do_forwardinc:
             print "train acc", acc
@@ -520,11 +504,11 @@ for iteration in xrange(0,200000):
         va = []
         vc = []
         for ind in range(0,10000,1000):
-            h_in = np.zeros(shape=(1000,m)).astype('float32')
-            
+            h_in = np.zeros(shape=(64,m)).astype('float32')
+
             for j in range(num_steps):
-                vx = validx[ind:ind+1000,j*nf:(j+1)*nf]
-                h_next,rec_loss,class_loss,acc,probs = forward_method_noupdate(vx, validy[ind:ind+1000], h_in, j)
+                vx = validx[ind:ind+64,j*nf:(j+1)*nf]
+                h_next,rec_loss,class_loss,acc,probs = forward_method_noupdate(vx, validy[ind:ind+64], h_in, j)
                 h_in = h_next
 
             va.append(acc)
